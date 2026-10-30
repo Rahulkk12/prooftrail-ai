@@ -1,23 +1,23 @@
 # PROOFTRAIL AI
 
-**Evidence-first web investigation.** PROOFTRAIL AI decomposes online claims into independently verifiable fields, discovers public sources with TinyFish Search, retrieves page content with TinyFish Fetch, and produces an auditable report with exact source passages, conflicts, gaps and uncertainty.
+**Evidence-first web investigation platform.** PROOFTRAIL AI decomposes online claims into independently verifiable fields, discovers public sources with TinyFish Search, retrieves page content with TinyFish Fetch, and produces an auditable report with exact source passages, conflicts, gaps and uncertainty.
 
 **Team Flux:** Vaishnavi Tamgale · Mahe Noor · Rahul Kumar
 
 ## What is implemented
 
-- React + Vite responsive investigation interface.
-- FastAPI API for claim submission, report retrieval, health and retry.
-- SQLite persistence for investigation metadata and report snapshots.
-- TinyFish Search REST integration with per-field query discovery and URL deduplication.
-- TinyFish Fetch REST integration with bounded batches, freshness preference and per-URL error capture.
-- Optional OpenAI-compatible LLM adapter for atomic claim decomposition and evidence comparison.
-- Four statuses: SUPPORTED, CONTRADICTED, MIXED and UNVERIFIED.
-- Exact source-passage validation; the report stores the original source substring, not a model-retyped quote.
-- Deterministic status guardrails: a supported/contradicted verdict must agree with the validated evidence relation; both direct relations force MIXED.
-- Safe-by-default behavior: missing evidence, missing LLM configuration or malformed model output cannot produce a confident verdict.
-- Baseline URL validation, server-side secrets, bounded source counts/timeouts and CI.
-- Docker Compose deployment with an Nginx same-origin API proxy and security headers.
+- **Premium SaaS Frontend**: Multi-page intelligence dashboard built with React + Vite, inspired by Linear, Stripe, and Vercel.
+- **FastAPI Backend**: Complete REST API for claim submission, investigation management, report retrieval, history, export, and retry.
+- **SQLite Persistence**: Stores original claims, atomic fields, queries, sources, verbatim evidence, limitations, and full report ledgers.
+- **TinyFish Search Integration**: Per-field official and independent query discovery with rate-limit backoff (HTTP 429), bounded concurrency, and URL deduplication.
+- **TinyFish Fetch Integration**: Clean markdown DOM extraction with in-memory TTL caching, bounded batches, and per-URL error capture.
+- **TinyFish Agent Integration**: Headless browser automation interface for dynamic navigation.
+- **Atomic Claim Decomposition**: Hybrid decomposition using OpenAI-compatible LLMs with a deterministic rule-based fallback.
+- **Four Forensic Statuses**: `SUPPORTED`, `CONTRADICTED`, `MIXED`, and `UNVERIFIED`.
+- **Exact Verbatim Substring Validation**: The report strictly stores and verifies original source substrings; paraphrases and hallucinations are discarded.
+- **Safe-by-Default Guardrails**: Missing evidence, missing keys, or malformed outputs cannot fabricate verdicts; fields remain `UNVERIFIED`.
+- **Anti-SSRF Security**: Rejects localhost, RFC-1918 private subnets, cloud metadata endpoints (`169.254.169.254`), and credentials in URLs.
+- **Docker Compose Deployment**: Production-ready deployment with Nginx same-origin proxy, security headers, and health checks.
 
 ## Architecture
 
@@ -28,19 +28,19 @@ Browser (React/Vite)
 Nginx reverse proxy (Docker deployment)
        |
        v
-FastAPI orchestrator -------- SQLite report store
+FastAPI orchestrator -------- SQLite audit ledger
        |
        +---- TinyFish Search (GET) -> candidate source URLs
        |
-       +---- TinyFish Fetch (POST) -> retrieved page text/metadata
+       +---- TinyFish Fetch (POST) -> retrieved page markdown & metadata
        |
-       +---- Optional LLM -> atomic claims + evidence relations
+       +---- TinyFish Agent (POST) -> interactive browser navigation
+       |
+       +---- Optional LLM -> atomic claim decomposition + evidence comparison
        |
        v
-Validated source passages + field findings -> report JSON -> UI
+Validated verbatim passages + field findings -> report JSON / Markdown -> UI
 ```
-
-TinyFish Search and Fetch are used for web discovery and retrieval. PROOFTRAIL owns claim decomposition, evidence linkage, status policy and report presentation. Provider credentials remain in the backend environment; never expose them through Vite variables.
 
 ## Requirements
 
@@ -60,7 +60,7 @@ From the repository root:
 cd backend
 python -m venv .venv
 # Windows PowerShell:
-.venv\\Scripts\\Activate.ps1
+.venv\Scripts\Activate.ps1
 # macOS/Linux:
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -86,7 +86,7 @@ Start the backend:
 uvicorn main:app --reload --port 8000
 ```
 
-### 2. Frontend (new terminal)
+### 2. Frontend (in a separate terminal)
 
 ```bash
 cd frontend
@@ -96,100 +96,36 @@ npm run dev
 
 Open http://localhost:5173. Vite proxies `/api` to the local FastAPI service. Health check: http://localhost:5173/api/health.
 
-## Run with Docker Compose
+## API Reference
 
-1. Create `backend/.env` from `backend/.env.example` and add your TinyFish key (and optional LLM key).
-2. From the repository root:
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/health` | `GET` | System status, provider configuration booleans, and cache metrics |
+| `/api/investigations` | `POST` | Create and execute an investigation |
+| `/api/investigations` | `GET` | List investigation history with pagination and status filters |
+| `/api/investigations/{id}` | `GET` | Get metadata summary for an investigation |
+| `/api/investigations/{id}/report` | `GET` | Get full audit report JSON |
+| `/api/investigations/{id}/export` | `GET` | Export report as `json` or `markdown` |
+| `/api/investigations/{id}/retry` | `POST` | Start a new auditable run linked to the original investigation |
+
+## Finding Policy
+
+- **SUPPORTED** — Direct supporting passage(s) have been validated, with no direct contradictory passage in the validated evidence.
+- **CONTRADICTED** — Direct contradictory passage(s) have been validated, with no direct supporting passage in the validated evidence.
+- **MIXED** — Validated evidence contains both direct support and direct contradiction.
+- **UNVERIFIED** — Evidence is missing, inaccessible, weak, malformed or not validated.
+
+Every displayed quotation must be located character-for-character in retrieved page text.
+
+## Automated Testing
 
 ```bash
-docker compose up --build
-```
+# Backend unit & contract tests (mocked providers)
+python -m unittest discover -s backend -p "test_*.py"
 
-3. Open http://localhost:8080.
-4. Stop with `docker compose down`. Add `-v` only if you intentionally want to delete the persisted SQLite data volume.
-
-The frontend container serves the built app through Nginx and proxies `/api` to the backend service. The backend runs as a non-root user. The database is stored in a named Docker volume.
-
-## Environment variables
-
-Backend `.env`:
-
-| Variable | Purpose |
-|---|---|
-| `TINYFISH_API_KEY` | Required for live TinyFish Search and Fetch |
-| `LLM_API_KEY` | Optional key for an OpenAI-compatible chat completions endpoint |
-| `LLM_BASE_URL` | Provider API base URL, default OpenRouter |
-| `LLM_MODEL` | Model identifier accepted by the provider |
-| `DATABASE_PATH` | SQLite database path |
-| `FRONTEND_ORIGIN` | Development CORS origin |
-| `MAX_SEARCH_RESULTS` | Candidate cap, maximum 10 |
-| `MAX_FETCH_URLS` | Fetch batch cap, maximum 10 |
-| `FETCH_TTL_SECONDS` | Fetch cache freshness preference; 0 requests live freshness |
-
-Do not put provider secrets in frontend environment variables, commit real `.env` files, or paste keys into issue reports.
-
-## API
-
-- `GET /api/health` — readiness and boolean provider configuration indicators; no credentials returned.
-- `POST /api/investigations` — create an investigation. Body: `{"claim":"...","source_url":null}`.
-- `GET /api/investigations/{id}` — investigation metadata.
-- `GET /api/investigations/{id}/report` — stored report snapshot.
-- `POST /api/investigations/{id}/retry` — start a new auditable run from the original inputs; prior reports are preserved.
-
-## Finding policy
-
-- **SUPPORTED** — direct supporting passage(s) have been validated, with no direct contradictory passage in the validated evidence.
-- **CONTRADICTED** — direct contradictory passage(s) have been validated, with no direct supporting passage in the validated evidence.
-- **MIXED** — validated evidence contains both direct support and direct contradiction.
-- **UNVERIFIED** — evidence is missing, inaccessible, weak, malformed or not validated.
-
-No evidence does not mean false. A model-generated explanation is not itself evidence. Every displayed quotation must be located in retrieved page text and the original source substring is stored. Source credibility, freshness and context still require human scrutiny.
-
-## Security and limitations
-
-- Provider keys remain server-side.
-- User-supplied URLs must use HTTP(S), cannot contain credentials, and are rejected when the hostname resolves to non-public IP addresses.
-- Search/fetch counts, input lengths and request timeouts are bounded.
-- Retrieved pages are treated as untrusted data; instructions inside them must not be followed by the analysis model.
-- This URL validation is a baseline, not a complete production SSRF boundary. For public deployment, add network-level egress restrictions, redirect target revalidation, DNS-rebinding protections, authentication, rate limiting and abuse monitoring.
-- The app currently uses synchronous request/response orchestration and SQLite. It is a hackathon MVP, not a horizontally scaled production service.
-- If the LLM key is absent or its output is invalid, findings stay UNVERIFIED. This preserves uncertainty but does not provide AI assessment.
-- Accuracy, latency and cost metrics have not been claimed. Measure against a human-reviewed gold set before making performance claims.
-
-## Validation
-
-CI runs:
-- Python unittest suite: URL validation, evidence relation/status policy, verbatim passage matching, API health, request validation, report retrieval and a mocked provider flow including retry.
-- Frontend production build with Vite.
-
-CI does not prove that your TinyFish account credentials work. Before a live demo, configure the keys and run an end-to-end investigation. Inspect the source pages and exact passages manually.
-
-## TinyFish REST contract
-
-The adapter follows the official REST references:
-- Search: `GET https://api.search.tinyfish.ai`, query parameters including `query`, `purpose`, `location` and `language`; authentication via `X-API-Key`.
-- Fetch: `POST https://api.fetch.tinyfish.ai`, JSON body with `urls`, optional `format` and `ttl`; response includes `results[]` and per-URL `errors[]`; authentication via `X-API-Key`.
-
-Provider schemas and account quotas can change; check the official docs and account dashboard before a production deployment.
-
-## Project structure
-
-```text
-backend/
-  main.py
-  test_main.py
-  requirements.txt
-  Dockerfile
-  .env.example
-frontend/
-  src/main.jsx
-  src/styles.css
-  Dockerfile
-  nginx.conf
-docs/
-  TEST_PLAN.md
-.github/workflows/ci.yml
-docker-compose.yml
+# Frontend component & build verification
+npm test --prefix frontend
+npm run build --prefix frontend
 ```
 
 ## License

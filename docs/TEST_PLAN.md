@@ -1,45 +1,60 @@
-# PROOFTRAIL AI — MVP validation plan
+# PROOFTRAIL AI — Validation & Verification Plan
 
-## Automated CI coverage
+## 1. Automated CI Coverage
 
-The CI workflow installs backend dependencies, runs Python unit tests, installs frontend dependencies and runs the Vite production build.
+The CI workflow installs backend dependencies, runs Python unit and integration tests (using mocked provider responses), installs frontend dependencies, builds the Vite production bundle, and executes the frontend verification test suite.
 
-Backend tests cover:
-- HTTP(S) URL scheme, embedded credentials, localhost, loopback, private and link-local IP rejection.
-- Supported/contradicted/mixed/unverified evidence status rules.
-- Exact original source substring extraction across whitespace/newline differences.
-- Paraphrase rejection.
-- Health response does not expose credentials.
-- Unknown report returns 404.
-- Private source URL rejected by request validation.
-- Mocked provider investigation returns UNVERIFIED when no LLM analysis is configured.
-- Stored report retrieval and retry creates a new run linked to the prior investigation.
+### Backend Automated Test Suites (`backend/test_main.py`):
+1. **URL Validation & Anti-SSRF Defense**:
+   - Accepts valid public HTTP/HTTPS URLs and global public IPs.
+   - Strictly rejects localhost, loopback (`127.0.0.1`), RFC-1918 private subnets (`10.x`, `172.16-31.x`, `192.168.x`).
+   - Rejects link-local cloud metadata endpoints (`169.254.169.254`).
+   - Rejects non-HTTP schemes (e.g. `file://`, `ftp://`) and embedded credentials (`https://user:pass@host`).
+2. **Evidence Status Policy & Verbatim Extraction**:
+   - `SUPPORTED`: Requires supporting passage and no contradictory passages.
+   - `CONTRADICTED`: Requires contradicting passage and no supporting passages.
+   - `MIXED`: Enforces that both supporting and contradicting evidence are present.
+   - `UNVERIFIED`: Assigned whenever evidence is missing, inaccessible, or model verdict is unsupported.
+   - Substring Extraction: Extracts exact original source slice allowing only whitespace normalization; strictly rejects paraphrased passages.
+3. **Claim Decomposition**:
+   - Rule-based deterministic fallback parses funding/stipend amounts, deadlines, and organizations into atomic claim units.
+   - Automatically attaches targeted `official_query` and `independent_query` for web discovery.
+4. **TinyFish Adapter Mocked Unit Tests**:
+   - Schema normalization for Search results (`position`, `site_name`, `title`, `snippet`, `url`).
+   - Bounded retries and backoff on HTTP 429 (Rate Limit).
+   - In-memory content caching prevents redundant HTTP fetch calls on identical URLs.
+   - Partial page errors captured in `errors[]` array.
+5. **API Contracts & Integration**:
+   - `GET /api/health`: Confirms status and cache size without exposing credentials.
+   - `POST /api/investigations`: Executes end-to-end pipeline with mocked providers.
+   - `GET /api/investigations`: Returns paginated history and findings breakdown.
+   - `GET /api/investigations/{id}`: Returns investigation metadata.
+   - `GET /api/investigations/{id}/report`: Returns full report JSON.
+   - `GET /api/investigations/{id}/export`: Exports report in structured JSON or executive Markdown format.
+   - `POST /api/investigations/{id}/retry`: Preserves prior audit run and links `retry_of`.
 
-## Manual live-provider acceptance
+---
 
-1. Configure `TINYFISH_API_KEY` in backend/.env; never place it in frontend code.
-2. Configure an OpenAI-compatible `LLM_API_KEY` and model accepted by the provider.
-3. Start the backend and frontend using the README instructions.
-4. Check `GET /api/health`; verify provider configuration booleans are true.
-5. Submit a well-scoped public claim and inspect the run trace.
-6. Confirm Search candidate URLs and Fetch result URLs correspond to actual public sources.
-7. Open every source URL; compare every displayed quote character-for-character with the source text.
-8. Confirm source access timestamps, publication metadata (when available), limitations and per-field statuses.
-9. Submit a claim with a known conflict and confirm both supporting and contradicting evidence appear before MIXED is assigned.
-10. Submit a claim with no evidence and confirm it stays UNVERIFIED.
-11. Test a failed URL and a provider rate limit; confirm the report records a limitation rather than fabricating a source.
-12. Retry a prior investigation and confirm the new report has a new ID and a retry_of reference.
-13. Inspect browser network traffic and built frontend assets; provider keys must never appear.
+## 2. Live Provider Acceptance Testing
 
-## Security review before public deployment
+Live tests interact with real external APIs (`api.search.tinyfish.ai`, `api.fetch.tinyfish.ai`, and OpenAI-compatible LLMs). They are clearly distinguished from unit tests and require explicit environment activation.
 
-- Add network-level egress restrictions to prevent private-network fetches and DNS rebinding.
-- Revalidate every redirect target at the fetch boundary.
-- Add authentication, rate limiting, abuse monitoring and retention controls.
-- Review dependency updates and container image pinning.
-- Avoid logging user secrets or raw provider credentials.
-- Treat retrieved page text as untrusted input at every model boundary.
+### To Run Live TinyFish Integration Tests:
+```bash
+export TINYFISH_API_KEY="your-real-tinyfish-api-key"
+export RUN_LIVE_TINYFISH_TESTS=1
+python -m unittest backend.test_main.LiveTinyFishIntegrationTests
+```
 
-## Not yet certified
-
-A green CI run is not proof of live TinyFish connectivity, factual accuracy, production SSRF resistance or safe multi-user deployment. Those require the live-provider and human-reviewed tests above.
+### Manual Acceptance Checklist:
+1. Configure `TINYFISH_API_KEY` in `backend/.env`.
+2. Configure `LLM_API_KEY` in `backend/.env` (optional, for AI comparison).
+3. Check `GET /api/health` and verify `tinyfish_configured: true`.
+4. Submit a test claim via `POST /api/investigations`:
+   - *"The Government announced a ₹50,000 scholarship for college students before 30 November."*
+5. Inspect the report run trace:
+   - Verify `tinyfish_search` queries discovered real government/news candidate URLs.
+   - Verify `tinyfish_fetch` retrieved clean markdown DOM text.
+   - Verify every cited evidence passage matches word-for-word in the source DOM.
+6. Submit a conflicting claim and verify that contradicting and supporting passages trigger `MIXED`.
+7. Submit an unverified or obscure claim and verify status remains strictly `UNVERIFIED`.
