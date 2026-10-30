@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 from main import app, enforce_evidence_status, extract_exact_passage, validate_public_url
@@ -86,6 +87,29 @@ class APIContractTests(unittest.TestCase):
             "source_url": "http://127.0.0.1/private"
         })
         self.assertEqual(response.status_code, 422)
+
+    @patch("main.tinyfish_search", new_callable=AsyncMock)
+    @patch("main.tinyfish_fetch", new_callable=AsyncMock)
+    @patch("main.llm_json", new_callable=AsyncMock)
+    def test_investigation_without_llm_never_forces_verdict(self, llm, fetch, search):
+        search.return_value = [{"url": "https://8.8.8.8/official", "title": "Official notice", "domain": "example.org"}]
+        fetch.return_value = ([{
+            "url": "https://8.8.8.8/official",
+            "final_url": "https://8.8.8.8/official",
+            "title": "Official notice",
+            "text": "The official notice confirms that the programme exists and is accepting applications."
+        }], [])
+        llm.return_value = None
+        response = self.client.post("/api/investigations", json={
+            "claim": "The programme exists and is accepting applications."
+        })
+        self.assertEqual(response.status_code, 200)
+        report = response.json()
+        self.assertEqual(report["status"], "completed_with_gaps")
+        self.assertTrue(report["sources"])
+        self.assertTrue(all(f["status"] == "UNVERIFIED" for f in report["findings"]))
+        self.assertTrue(any("LLM_API_KEY" in x for x in report["limitations"]))
+        self.assertTrue(report["investigation_id"].startswith("inv_"))
 
 
 if __name__ == "__main__":
