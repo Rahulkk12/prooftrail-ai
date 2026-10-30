@@ -232,6 +232,7 @@ async def assess_evidence(claims: list[dict[str, Any]], sources: list[dict[str, 
         if claim_id not in {c["id"] for c in claims}:
             continue
         evidence_ids = []
+        evidence_relations = set()
         for ev in raw.get("evidence", [])[:12]:
             src = source_by_id.get(ev.get("source_id"))
             passage = normalize_text(str(ev.get("passage", "")))
@@ -239,13 +240,23 @@ async def assess_evidence(claims: list[dict[str, Any]], sources: list[dict[str, 
             if not src or len(passage) < 20 or passage not in normalize_text(src.get("text", "")):
                 continue
             evidence_id = f"ev_{uuid.uuid4().hex[:10]}"
+            relation = ev.get("relation") if ev.get("relation") in {"SUPPORTS", "CONTRADICTS", "CONTEXT"} else "CONTEXT"
             src["evidence"].append({
                 "id": evidence_id, "claim_unit_id": claim_id, "passage": passage,
-                "relation": ev.get("relation") if ev.get("relation") in {"SUPPORTS", "CONTRADICTS", "CONTEXT"} else "CONTEXT",
+                "relation": relation,
                 "extracted_value": ev.get("extracted_value"), "limitations": ev.get("limitations"),
             })
             evidence_ids.append(evidence_id)
+            evidence_relations.add(relation)
         status = raw.get("status") if raw.get("status") in allowed else "UNVERIFIED"
+        # Prevent a verdict from contradicting the relations of its own cited passages.
+        # MIXED requires both direct support and direct contradiction in validated evidence.
+        if status == "SUPPORTED" and "SUPPORTS" not in evidence_relations:
+            status = "UNVERIFIED"
+        elif status == "CONTRADICTED" and "CONTRADICTS" not in evidence_relations:
+            status = "UNVERIFIED"
+        elif status == "MIXED" and not {"SUPPORTS", "CONTRADICTS"}.issubset(evidence_relations):
+            status = "UNVERIFIED"
         if status != "UNVERIFIED" and not evidence_ids:
             status = "UNVERIFIED"
         findings.append({"claim_unit_id": claim_id, "status": status, "rationale": normalize_text(str(raw.get("rationale", "")))[:1200] or "The available evidence does not support a defensible conclusion.", "evidence_ids": evidence_ids})
