@@ -101,7 +101,6 @@ function isSafePublicUrl(urlStr) {
 function extractExactPassage(sourceText, claimText) {
   if (!sourceText || typeof sourceText !== 'string' || !claimText) return null;
 
-  // Filter significant query keywords (len >= 3)
   const stopWords = new Set(['this', 'that', 'with', 'from', 'into', 'have', 'were', 'been', 'will', 'some', 'what', 'when', 'then', 'about', 'more', 'there']);
   const keywords = claimText
     .toLowerCase()
@@ -111,7 +110,6 @@ function extractExactPassage(sourceText, claimText) {
 
   if (keywords.length === 0) return null;
 
-  // Split into distinct candidate sentences / clauses
   const rawSentences = sourceText
     .split(/(?<=[.!?\n])\s+/)
     .map(s => s.trim())
@@ -133,14 +131,13 @@ function extractExactPassage(sourceText, claimText) {
     }
   }
 
-  // Invariant verification: MUST be exact verbatim substring of sourceText
   if (bestSentence && sourceText.includes(bestSentence)) {
     return bestSentence;
   }
   return null;
 }
 
-// TinyFish Search with automated retry and backoff
+// TinyFish Search with automated retry
 async function tinyfishSearchSingle(query) {
   if (!TINYFISH_KEY) {
     throw new Error('TINYFISH_API_KEY is not configured in backend/.env.');
@@ -197,7 +194,7 @@ async function tinyfishSearchSingle(query) {
   throw lastErr || new Error('TinyFish Search connection failed after retries.');
 }
 
-// Multi-Tier Search for high-coverage discovery
+// Multi-tier query expansion
 async function multiTierTinyFishSearch(claim) {
   const words = claim.trim().split(/\s+/);
   const stopWords = new Set(['this', 'that', 'with', 'from', 'into', 'have', 'were', 'been', 'will', 'some', 'what', 'when']);
@@ -232,7 +229,7 @@ async function multiTierTinyFishSearch(claim) {
   return allResults.slice(0, 8);
 }
 
-// TinyFish Fetch with automated retry and cache
+// TinyFish Fetch
 async function tinyfishFetch(urls) {
   if (!TINYFISH_KEY) {
     throw new Error('TINYFISH_API_KEY is not configured in backend/.env.');
@@ -312,12 +309,11 @@ async function tinyfishFetch(urls) {
   };
 }
 
-// Structured claim decomposition
+// Decompose claim
 function decomposeClaim(claimText) {
   const units = [];
   let idCounter = 0;
 
-  // 1. Primary assertion
   units.push({
     id: `claim_unit_${idCounter++}`,
     category: 'PRIMARY_CLAIM',
@@ -326,7 +322,6 @@ function decomposeClaim(claimText) {
     verification_question: `Does authenticated reporting confirm: "${claimText.trim()}"?`,
   });
 
-  // 2. Incident / Occurrence extraction
   const words = claimText.split(/\s+/);
   const stopWords = new Set(['this', 'that', 'with', 'from', 'into', 'have', 'were', 'been', 'will', 'some', 'what', 'when']);
   const keywords = words.filter(w => w.length > 3 && !stopWords.has(w.toLowerCase()));
@@ -345,16 +340,14 @@ function decomposeClaim(claimText) {
   return units;
 }
 
-// Complete investigation execution
+// Investigation Engine
 async function runInvestigation(claim, sourceUrl) {
   const invId = `inv_${crypto.randomBytes(6).toString('hex')}`;
   const created = nowIso();
   const limitations = [];
 
-  // 1. Decompose
   const claimUnits = decomposeClaim(claim);
 
-  // 2. Multi-Tier TinyFish Search
   let searchResults = [];
   try {
     searchResults = await multiTierTinyFishSearch(claim);
@@ -362,7 +355,6 @@ async function runInvestigation(claim, sourceUrl) {
     limitations.push(`TinyFish Search query error: ${err.message}`);
   }
 
-  // 3. Assemble and sanitize candidate URLs
   const candidateUrls = [];
   if (sourceUrl && isSafePublicUrl(sourceUrl)) {
     candidateUrls.push(sourceUrl);
@@ -373,7 +365,6 @@ async function runInvestigation(claim, sourceUrl) {
     }
   }
 
-  // 4. TinyFish Fetch
   let fetchedPages = [];
   if (candidateUrls.length > 0) {
     try {
@@ -389,7 +380,6 @@ async function runInvestigation(claim, sourceUrl) {
     limitations.push('No public candidate sources were discovered for this claim.');
   }
 
-  // 5. Structure sources
   const sources = fetchedPages.map((page) => {
     const matchingSearch = searchResults.find(s => s.url === page.url) || {};
     const domain = new URL(page.final_url || page.url).hostname.toLowerCase();
@@ -415,7 +405,6 @@ async function runInvestigation(claim, sourceUrl) {
     };
   });
 
-  // 6. Evidence Cross-Referencing
   const allEvidence = [];
   const findings = [];
 
@@ -432,7 +421,6 @@ async function runInvestigation(claim, sourceUrl) {
         const pLower = passage.toLowerCase();
         let relation = 'CONTEXT';
 
-        // Contextual analysis of extracted verbatim quotation
         if (
           pLower.includes('fire') || pLower.includes('incident') ||
           pLower.includes('broke out') || pLower.includes('reported') ||
@@ -498,7 +486,6 @@ async function runInvestigation(claim, sourceUrl) {
     });
   }
 
-  // 7. Overall status
   const statuses = findings.map(f => f.status);
   let overallStatus = 'completed';
   if (sources.length === 0) {
@@ -521,7 +508,6 @@ async function runInvestigation(claim, sourceUrl) {
     limitations,
   };
 
-  // 8. Persist to SQLite
   try {
     const insertStmt = db.prepare(`
       INSERT INTO investigations (
@@ -552,14 +538,321 @@ async function runInvestigation(claim, sourceUrl) {
   return report;
 }
 
-// 3. HTTP API Server
+// 4. OpenAPI 3.0 Specification
+const openApiSpec = {
+  openapi: "3.0.3",
+  info: {
+    title: "PROOFTRAIL AI - Evidence Investigation API",
+    description: "Production API for TinyFish-powered real-time web evidence investigations, exact substring verification, and audit ledgers.",
+    version: "0.4.0",
+    contact: {
+      name: "ProofTrail AI Support",
+      url: "https://github.com/Rahulkk12/prooftrail-ai"
+    }
+  },
+  servers: [
+    {
+      url: "http://localhost:8000",
+      description: "Local Investigation Engine"
+    }
+  ],
+  paths: {
+    "/api/health": {
+      get: {
+        summary: "System Health & TinyFish Status",
+        description: "Returns health status, active database mode, and whether TinyFish API key is authenticated.",
+        tags: ["Health & System"],
+        responses: {
+          "200": {
+            description: "System is healthy",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    status: { type: "string", example: "ok" },
+                    version: { type: "string", example: "0.4.0" },
+                    timestamp: { type: "string" },
+                    tinyfish_configured: { type: "boolean", example: true },
+                    llm_configured: { type: "boolean", example: false },
+                    database: { type: "string", example: "sqlite" },
+                    cache_entries: { type: "integer", example: 8 },
+                    policy: { type: "string", example: "real_data_only" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/investigations": {
+      get: {
+        summary: "List Audit Ledger Investigations",
+        description: "Retrieves a paginated list of all investigations conducted in this workspace.",
+        tags: ["Investigations"],
+        parameters: [
+          {
+            name: "limit",
+            in: "query",
+            description: "Number of investigations to return (default 50)",
+            schema: { type: "integer", default: 50 }
+          }
+        ],
+        responses: {
+          "200": {
+            description: "List of investigations",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    total: { type: "integer", example: 3 },
+                    limit: { type: "integer", example: 50 },
+                    investigations: { type: "array" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      post: {
+        summary: "Create & Execute Live Web Investigation",
+        description: "Accepts a factual claim statement, decomposes it into atomic fields, executes live TinyFish Search & Fetch, and returns a verified evidence report.",
+        tags: ["Investigations"],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["claim"],
+                properties: {
+                  claim: {
+                    type: "string",
+                    description: "The claim statement to investigate (min 12 characters)",
+                    example: "presidency got into fire"
+                  },
+                  source_url: {
+                    type: "string",
+                    description: "Optional reference URL to prioritize during research",
+                    example: "https://timesofindia.indiatimes.com"
+                  }
+                }
+              }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "Investigation completed successfully with evidence ledger",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    investigation_id: { type: "string", example: "inv_93364a5aff29" },
+                    status: { type: "string", enum: ["completed", "completed_with_gaps", "failed"] },
+                    input_text: { type: "string", example: "presidency got into fire" },
+                    sources: { type: "array" },
+                    findings: { type: "array" },
+                    evidence: { type: "array" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { description: "Invalid claim input (less than 12 characters)" },
+          "503": { description: "TinyFish API key not configured" }
+        }
+      }
+    },
+    "/api/investigations/{id}/report": {
+      get: {
+        summary: "Get Investigation Full Report",
+        description: "Retrieves complete audit report JSON including exact quotations, citations, and evidence ledger.",
+        tags: ["Reports & Export"],
+        parameters: [
+          {
+            name: "id",
+            in: "path",
+            required: true,
+            schema: { type: "string", example: "inv_93364a5aff29" }
+          }
+        ],
+        responses: {
+          "200": { description: "Full structured report JSON" },
+          "404": { description: "Report not found" }
+        }
+      }
+    },
+    "/api/investigations/{id}/export": {
+      get: {
+        summary: "Export Investigation Report",
+        description: "Export the completed investigation report as structured JSON or executive Markdown.",
+        tags: ["Reports & Export"],
+        parameters: [
+          {
+            name: "id",
+            in: "path",
+            required: true,
+            schema: { type: "string", example: "inv_93364a5aff29" }
+          },
+          {
+            name: "format",
+            in: "query",
+            schema: { type: "string", enum: ["json", "markdown"], default: "json" }
+          }
+        ],
+        responses: {
+          "200": { description: "Downloadable report" }
+        }
+      }
+    },
+    "/api/investigations/{id}/retry": {
+      post: {
+        summary: "Retry Investigation Run",
+        description: "Initiates a new auditable investigation run using original inputs, linking back to earlier ID.",
+        tags: ["Investigations"],
+        parameters: [
+          {
+            name: "id",
+            in: "path",
+            required: true,
+            schema: { type: "string", example: "inv_93364a5aff29" }
+          }
+        ],
+        responses: {
+          "200": { description: "New completed investigation report" }
+        }
+      }
+    }
+  }
+};
+
+// Swagger UI HTML Page
+const swaggerUiHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>PROOFTRAIL AI — Interactive Swagger API</title>
+  <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.11.0/swagger-ui.css" />
+  <link rel="icon" type="image/png" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.11.0/favicon-32x32.png" />
+  <style>
+    body {
+      margin: 0;
+      background: #0f172a;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: #f8fafc;
+    }
+    .topbar-custom {
+      background: #090d16;
+      border-bottom: 2px solid #0284c7;
+      padding: 14px 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    }
+    .topbar-brand {
+      font-size: 20px;
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      letter-spacing: -0.5px;
+      color: #ffffff;
+    }
+    .topbar-brand span { color: #38bdf8; }
+    .topbar-badge {
+      background: #0369a1;
+      color: #e0f2fe;
+      font-size: 11px;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .frontend-link {
+      background: #0284c7;
+      color: #ffffff !important;
+      padding: 8px 16px;
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 600;
+      transition: background 0.2s;
+    }
+    .frontend-link:hover {
+      background: #0369a1;
+    }
+    .swagger-container {
+      background: #ffffff;
+      min-height: calc(100vh - 65px);
+    }
+    .swagger-ui .topbar { display: none; }
+    .swagger-ui {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 24px 20px 80px;
+    }
+    .swagger-ui .info { margin: 20px 0 32px; }
+    .swagger-ui .info .title { font-size: 28px; color: #0f172a; font-weight: 800; }
+    .swagger-ui .info p { font-size: 14px; color: #475569; line-height: 1.6; }
+    .swagger-ui .scheme-container { background: #f8fafc; border-bottom: 1px solid #e2e8f0; padding: 15px 0; }
+    .swagger-ui .opblock.opblock-post { border-color: #49cc90; background: rgba(73,204,144,.05); }
+    .swagger-ui .opblock.opblock-get { border-color: #61affe; background: rgba(97,175,254,.05); }
+    .swagger-ui .btn.execute { background-color: #0284c7; border-color: #0284c7; color: #fff; font-weight: 700; }
+    .swagger-ui .btn.execute:hover { background-color: #0369a1; }
+  </style>
+</head>
+<body>
+  <div class="topbar-custom">
+    <div class="topbar-brand">
+      PROOFTRAIL <span>AI</span>
+      <span class="topbar-badge">v0.4.0 Engine</span>
+    </div>
+    <div class="nav-actions">
+      <span style="font-size: 13px; color: #94a3b8;">TinyFish Web Intelligence</span>
+      <a href="http://localhost:5173" class="frontend-link" target="_blank" rel="noopener">Open Frontend Studio &rarr;</a>
+    </div>
+  </div>
+  <div class="swagger-container">
+    <div id="swagger-ui"></div>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.11.0/swagger-ui-bundle.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.11.0/swagger-ui-standalone-preset.js"></script>
+  <script>
+    window.onload = function() {
+      SwaggerUIBundle({
+        url: "/openapi.json",
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        presets: [
+          SwaggerUIBundle.presets.apis,
+          SwaggerUIStandalonePreset
+        ],
+        layout: "StandaloneLayout",
+        docExpansion: "list",
+        defaultModelsExpandDepth: 1
+      });
+    };
+  </script>
+</body>
+</html>`;
+
+// 5. HTTP API Server
 const server = http.createServer(async (req, res) => {
   // CORS & Security Headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, X-API-Key');
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'DENY');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -583,14 +876,34 @@ const server = http.createServer(async (req, res) => {
   });
 
   const sendJson = (statusCode, data) => {
-    res.writeHead(statusCode, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(data, null, 2));
+    const jsonStr = JSON.stringify(data, null, 2);
+    const buf = Buffer.from(jsonStr, 'utf8');
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Length', buf.length);
+    res.writeHead(statusCode);
+    res.end(buf);
   };
 
   try {
+    // A. Root or Swagger aliases -> Swagger UI
+    if (req.method === 'GET' && (pathname === '/' || pathname === '/docs' || pathname === '/docs/' || pathname === '/swagger' || pathname === '/swagger/')) {
+      const buf = Buffer.from(swaggerUiHtml, 'utf8');
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Content-Length', buf.length);
+      res.writeHead(200);
+      res.end(buf);
+      return;
+    }
+
+    // B. OpenAPI JSON Specification
+    if (req.method === 'GET' && pathname === '/openapi.json') {
+      sendJson(200, openApiSpec);
+      return;
+    }
+
     // 1. Health check
     if (req.method === 'GET' && pathname === '/api/health') {
-      sendJson(200, {
+      const healthData = {
         status: 'ok',
         version: '0.4.0',
         timestamp: nowIso(),
@@ -600,7 +913,54 @@ const server = http.createServer(async (req, res) => {
         cache_entries: pageCache.size,
         environment: 'development',
         policy: 'real_data_only',
-      });
+      };
+
+      const accept = (req.headers['accept'] || '').toLowerCase();
+      // If a human opened this in a browser tab (text/html):
+      if (accept.includes('text/html') && !accept.includes('application/json')) {
+        const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ProofTrail AI — API Health</title>
+  <style>
+    body { background: #0b1120; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+    .card { background: #0f172a; border: 1px solid #1e293b; border-radius: 14px; padding: 36px; max-width: 600px; width: 90%; box-shadow: 0 24px 48px rgba(0,0,0,0.6); }
+    h1 { font-size: 22px; margin: 0 0 10px; color: #38bdf8; display: flex; align-items: center; justify-content: space-between; }
+    p { color: #94a3b8; font-size: 14px; margin: 0 0 24px; line-height: 1.5; }
+    .actions { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
+    .btn { display: inline-flex; align-items: center; gap: 8px; background: #0284c7; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; font-weight: 700; font-size: 14px; transition: background 0.15s; }
+    .btn:hover { background: #0369a1; }
+    .btn-secondary { background: #1e293b; border: 1px solid #334155; color: #cbd5e1; }
+    .btn-secondary:hover { background: #334155; }
+    pre { background: #020617; border: 1px solid #1e293b; border-radius: 8px; padding: 16px; color: #38bdf8; font-size: 13px; overflow-x: auto; margin: 0; font-family: ui-monospace, Menlo, Monaco, Consolas, monospace; }
+    .badge { background: #065f46; color: #6ee7b7; font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 999px; letter-spacing: 0.5px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>
+      <span>PROOFTRAIL AI API</span>
+      <span class="badge">ONLINE</span>
+    </h1>
+    <p>The backend investigation engine is online with live TinyFish integration ready to audit claims.</p>
+    <div class="actions">
+      <a href="/docs" class="btn">&#x26A1; Open Swagger UI Docs</a>
+      <a href="http://localhost:5173" class="btn btn-secondary" target="_blank">&#x1F680; Open Frontend Studio</a>
+    </div>
+    <pre>${JSON.stringify(healthData, null, 2)}</pre>
+  </div>
+</body>
+</html>`;
+        const buf = Buffer.from(html, 'utf8');
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.setHeader('Content-Length', buf.length);
+        res.writeHead(200);
+        res.end(buf);
+        return;
+      }
+
+      sendJson(200, healthData);
       return;
     }
 
@@ -729,19 +1089,16 @@ const server = http.createServer(async (req, res) => {
           ...rep.sources.map(s => `- [${s.title}](${s.final_url}) (${s.publisher}) [${s.quality?.tier}]`),
         ].join('\n');
 
-        res.writeHead(200, {
-          'Content-Type': 'text/markdown',
-          'Content-Disposition': `attachment; filename="prooftrail-${invId}.md"`,
-        });
-        res.end(md);
+        const mdBuf = Buffer.from(md, 'utf8');
+        res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+        res.setHeader('Content-Length', mdBuf.length);
+        res.setHeader('Content-Disposition', `attachment; filename="prooftrail-${invId}.md"`);
+        res.writeHead(200);
+        res.end(mdBuf);
         return;
       }
 
-      res.writeHead(200, {
-        'Content-Type': 'application/json',
-        'Content-Disposition': `attachment; filename="prooftrail-${invId}.json"`,
-      });
-      res.end(JSON.stringify(rep, null, 2));
+      sendJson(200, rep);
       return;
     }
 
@@ -771,7 +1128,8 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, HOST, () => {
   console.log(`================================================================`);
   console.log(`  PROOFTRAIL AI - Evidence Investigation Engine (v0.4.0)`);
-  console.log(`  Live API URL: http://localhost:${PORT}`);
+  console.log(`  Swagger UI Docs: http://localhost:${PORT}/docs`);
+  console.log(`  Live API URL:    http://localhost:${PORT}`);
   console.log(`  TinyFish Status: ${TINYFISH_KEY ? 'CONNECTED (Live Key Detected)' : 'UNCONFIGURED'}`);
   console.log(`================================================================`);
 });
