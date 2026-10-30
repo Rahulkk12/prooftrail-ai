@@ -208,6 +208,16 @@ async def decompose_claim(claim: str) -> list[dict[str, Any]]:
     }]
 
 
+def extract_exact_passage(source_text: str, proposed_passage: str) -> str | None:
+    """Return the original source substring, allowing only whitespace normalization."""
+    words = proposed_passage.strip().split()
+    if not words:
+        return None
+    pattern = r"\\s+".join(re.escape(word) for word in words)
+    match = re.search(pattern, source_text)
+    return match.group(0) if match else None
+
+
 def enforce_evidence_status(status: str, relations: set[str]) -> str:
     """Downgrade model verdicts that are not backed by matching validated passage relations."""
     if status == "SUPPORTED" and "SUPPORTS" not in relations:
@@ -246,9 +256,10 @@ async def assess_evidence(claims: list[dict[str, Any]], sources: list[dict[str, 
         evidence_relations = set()
         for ev in raw.get("evidence", [])[:12]:
             src = source_by_id.get(ev.get("source_id"))
-            passage = normalize_text(str(ev.get("passage", "")))
-            # Validate quoted passage against the retrieved text (whitespace-normalized).
-            if not src or len(passage) < 20 or passage not in normalize_text(src.get("text", "")):
+            proposed_passage = str(ev.get("passage", "")).strip()
+            # Return the exact original source slice, not a model paraphrase or retyped quote.
+            passage = extract_exact_passage(src.get("text", ""), proposed_passage) if src else None
+            if not src or not passage or len(normalize_text(passage)) < 20:
                 continue
             evidence_id = f"ev_{uuid.uuid4().hex[:10]}"
             relation = ev.get("relation") if ev.get("relation") in {"SUPPORTS", "CONTRADICTS", "CONTEXT"} else "CONTEXT"
