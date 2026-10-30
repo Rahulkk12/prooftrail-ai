@@ -21,7 +21,7 @@ import SummaryStatistics from '../components/SummaryStatistics';
 import StatusBadge from '../components/StatusBadge';
 import EmptyState from '../components/EmptyState';
 import { listInvestigations } from '../api/client';
-import { EXAMPLE_INVESTIGATION_REPORTS } from '../data/exampleReports';
+
 
 export default function DashboardPage({ onNavigate, onSelectReport, onStartInvestigation, onLoadExample }) {
   const [investigations, setInvestigations] = useState([]);
@@ -68,9 +68,7 @@ export default function DashboardPage({ onNavigate, onSelectReport, onStartInves
     return true;
   });
 
-  const handleQuickExample = () => {
-    onLoadExample(EXAMPLE_INVESTIGATION_REPORTS[0]);
-  };
+  
 
   return (
     <div className="dashboard-page-container">
@@ -211,8 +209,7 @@ export default function DashboardPage({ onNavigate, onSelectReport, onStartInves
             }
             actionLabel="Start New Investigation"
             onAction={() => onNavigate('new')}
-            secondaryActionLabel="Load Benchmark Example"
-            onSecondaryAction={handleQuickExample}
+            
           />
         ) : (
           <div className="investigations-table-wrapper">

@@ -17,7 +17,7 @@ import {
 import StatusBadge from '../components/StatusBadge';
 import EmptyState from '../components/EmptyState';
 import { listInvestigations } from '../api/client';
-import { EXAMPLE_INVESTIGATION_REPORTS } from '../data/exampleReports';
+
 
 export default function HistoryPage({ onNavigate, onSelectReport, onRetry, onLoadExample }) {
   const [investigations, setInvestigations] = useState([]);

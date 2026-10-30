@@ -19,9 +19,16 @@ from main import (
     rate_limiter,
     rule_based_claim_decomposition,
     sanitize_untrusted_text,
+    tinyfish,
     tinyfish_fetch,
     tinyfish_search,
     validate_public_url,
+)
+from app.integrations.tinyfish_client import (
+    TinyFishClient,
+    TinyFishError,
+    TinyFishAuthError,
+    TinyFishRateLimitError,
 )
 
 
@@ -61,6 +68,15 @@ class URLSecurityAndSSRFTests(unittest.TestCase):
         # ::ffff:127.0.0.1 maps to loopback
         mapped_loopback = ipaddress.ip_address("::ffff:127.0.0.1")
         self.assertFalse(is_safe_global_ip(mapped_loopback))
+
+    def test_rejects_cgnat_and_documentation_ips(self):
+        import ipaddress
+        # 100.64.0.1 (Carrier Grade NAT)
+        self.assertFalse(is_safe_global_ip(ipaddress.ip_address("100.64.0.1")))
+        # 192.0.2.1 (TEST-NET-1)
+        self.assertFalse(is_safe_global_ip(ipaddress.ip_address("192.0.2.1")))
+        # 169.254.1.1 (Link-local subnet)
+        self.assertFalse(is_safe_global_ip(ipaddress.ip_address("169.254.1.1")))
 
         # ::ffff:169.254.169.254 maps to cloud metadata
         mapped_metadata = ipaddress.ip_address("::ffff:169.254.169.254")
@@ -304,6 +320,17 @@ class APIContractTests(unittest.TestCase):
         })
         self.assertEqual(response.status_code, 422)
 
+    def test_unconfigured_tinyfish_blocks_investigation_with_503(self):
+        """Verifies that missing TinyFish credentials returns HTTP 503 and strictly rejects fake results."""
+        with patch.object(tinyfish, "is_configured", False):
+            response = self.client.post("/api/investigations", json={
+                "claim": "The government scholarship provides a direct benefit transfer of ₹50,000 for college students."
+            })
+            self.assertEqual(response.status_code, 503)
+            data = response.json()
+            self.assertIn("TinyFish API is not configured", data.get("detail", ""))
+
+    @patch.object(tinyfish, "is_configured", True)
     @patch("main.tinyfish_search", new_callable=AsyncMock)
     @patch("main.tinyfish_fetch", new_callable=AsyncMock)
     @patch("main.llm_json", new_callable=AsyncMock)
@@ -360,6 +387,23 @@ class APIContractTests(unittest.TestCase):
     os.getenv("RUN_LIVE_TINYFISH_TESTS") == "1" and os.getenv("TINYFISH_API_KEY"),
     "Live TinyFish credentials not provided. Set RUN_LIVE_TINYFISH_TESTS=1 and TINYFISH_API_KEY to run live acceptance tests."
 )
+class TinyFishIntegrationUnitTests(unittest.TestCase):
+    """Unit test suite for the dedicated TinyFishClient module."""
+
+    def test_unconfigured_client_raises_auth_error(self):
+        client = TinyFishClient(api_key="")
+        self.assertFalse(client.is_configured)
+        with self.assertRaises(TinyFishAuthError):
+            client._headers()
+
+    def test_configured_client_headers(self):
+        client = TinyFishClient(api_key="test_tf_secret_key_12345")
+        self.assertTrue(client.is_configured)
+        headers = client._headers()
+        self.assertEqual(headers["X-API-Key"], "test_tf_secret_key_12345")
+        self.assertIn("User-Agent", headers)
+
+
 class LiveTinyFishIntegrationTests(unittest.TestCase):
     """These tests execute real authenticated network calls against live TinyFish APIs.
     Skipped by default in CI to avoid consuming API quota without credentials.

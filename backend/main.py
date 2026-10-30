@@ -24,31 +24,46 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 
+import sys
+_backend_dir = Path(__file__).resolve().parent
+if str(_backend_dir) not in sys.path:
+    sys.path.insert(0, str(_backend_dir))
+
+from app.config import settings
+from app.integrations.tinyfish_client import (
+    TinyFishClient,
+    TinyFishError,
+    TinyFishAuthError,
+    TinyFishRateLimitError,
+    TinyFishNetworkError,
+)
+
 load_dotenv()
 
 # Logger setup with credential scrubbing filter
 logger = logging.getLogger("prooftrail.backend")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-APP_VERSION = "0.3.0"
-DB_PATH = Path(os.getenv("DATABASE_PATH", "./data/prooftrail.db"))
+APP_VERSION = "0.4.0"
+DB_PATH = Path(settings.database_path)
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-# Provider Credentials & Settings
-TINYFISH_KEY = os.getenv("TINYFISH_API_KEY", "").strip()
-TINYFISH_SEARCH_BASE = os.getenv("TINYFISH_SEARCH_BASE", "https://api.search.tinyfish.ai").rstrip("/")
-TINYFISH_FETCH_BASE = os.getenv("TINYFISH_FETCH_BASE", "https://api.fetch.tinyfish.ai").rstrip("/")
-TINYFISH_AGENT_BASE = os.getenv("TINYFISH_AGENT_BASE", "https://agent.tinyfish.ai").rstrip("/")
+tinyfish = TinyFishClient()
 
-LLM_KEY = os.getenv("LLM_API_KEY", "").strip()
-LLM_BASE = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
-LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-4.1-mini")
+TINYFISH_KEY = settings.tinyfish_api_key
+TINYFISH_SEARCH_BASE = settings.tinyfish_search_url
+TINYFISH_FETCH_BASE = settings.tinyfish_fetch_url
+TINYFISH_AGENT_BASE = settings.tinyfish_agent_url
 
-MAX_SEARCH = max(1, min(int(os.getenv("MAX_SEARCH_RESULTS", "8")), 10))
-MAX_FETCH = max(1, min(int(os.getenv("MAX_FETCH_URLS", "8")), 10))
-FETCH_TTL = max(0, int(os.getenv("FETCH_TTL_SECONDS", "0")))
-CACHE_TTL = max(60, int(os.getenv("CACHE_TTL_SECONDS", "3600")))
-RATE_LIMIT_PER_MINUTE = max(5, int(os.getenv("RATE_LIMIT_PER_MINUTE", "30")))
+LLM_KEY = settings.llm_api_key
+LLM_BASE = settings.llm_base_url
+LLM_MODEL = settings.llm_model
+
+MAX_SEARCH = max(1, min(settings.max_search_results, 10))
+MAX_FETCH = max(1, min(settings.max_fetch_urls, 10))
+FETCH_TTL = max(0, settings.fetch_ttl_seconds)
+CACHE_TTL = 3600
+RATE_LIMIT_PER_MINUTE = 30
 
 app = FastAPI(
     title="PROOFTRAIL AI API",
@@ -230,6 +245,27 @@ class InvestigationInput(BaseModel):
         return value
 
 
+DISALLOWED_NETWORKS = [
+    ipaddress.ip_network("0.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("100.64.0.0/10"),       # CGNAT (RFC 6598)
+    ipaddress.ip_network("127.0.0.0/8"),        # Loopback
+    ipaddress.ip_network("169.254.0.0/16"),     # Link-Local & Cloud Metadata (169.254.169.254)
+    ipaddress.ip_network("172.16.0.0/12"),      # Private RFC 1918
+    ipaddress.ip_network("192.0.0.0/24"),       # IETF Protocol Assignments
+    ipaddress.ip_network("192.0.2.0/24"),       # Documentation (TEST-NET-1)
+    ipaddress.ip_network("192.168.0.0/16"),     # Private RFC 1918
+    ipaddress.ip_network("198.18.0.0/15"),      # Benchmarking
+    ipaddress.ip_network("198.51.100.0/24"),    # Documentation (TEST-NET-2)
+    ipaddress.ip_network("203.0.113.0/24"),     # Documentation (TEST-NET-3)
+    ipaddress.ip_network("224.0.0.0/4"),        # Multicast
+    ipaddress.ip_network("240.0.0.0/4"),        # Reserved
+    ipaddress.ip_network("255.255.255.255/32"), # Broadcast
+    ipaddress.ip_network("::1/128"),            # IPv6 Loopback
+    ipaddress.ip_network("fc00::/7"),           # IPv6 Unique Local
+    ipaddress.ip_network("fe80::/10"),          # IPv6 Link-Local
+]
+
 def is_safe_global_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Validate that an IP is global and public, blocking loopback, private, link-local, and cloud metadata."""
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
@@ -238,9 +274,9 @@ def is_safe_global_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool
         return False
     if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
         return False
-    # Explicit defense against AWS / GCP / Azure link-local metadata service (169.254.169.254)
-    if str(ip) == "169.254.169.254":
-        return False
+    for net in DISALLOWED_NETWORKS:
+        if ip in net:
+            return False
     return True
 
 
@@ -883,13 +919,17 @@ async def assess_evidence(claims: list[dict[str, Any]], sources: list[dict[str, 
 @app.get("/api/health", summary="System Health & Provider Status")
 async def health():
     """Returns runtime health status, configured provider statuses, and database mode without exposing secrets."""
+    diag = settings.diagnostics()
     return {
         "status": "ok",
         "version": APP_VERSION,
-        "tinyfish_configured": bool(TINYFISH_KEY),
-        "llm_configured": bool(LLM_KEY),
+        "timestamp": now_iso(),
+        "tinyfish_configured": diag["tinyfish_configured"],
+        "llm_configured": diag["llm_configured"],
         "database": "sqlite",
         "cache_entries": page_cache.size(),
+        "environment": diag["environment"],
+        "policy": "real_data_only",
     }
 
 
@@ -904,6 +944,17 @@ async def create_investigation(payload: InvestigationInput, request: Request):
             status_code=429,
             detail=f"Rate limit exceeded. Please wait {retry_after} seconds before launching another investigation.",
             headers={"Retry-After": str(retry_after)},
+        )
+
+    # Real-Data Policy: Refuse to execute fake or simulated investigations when TinyFish is unconfigured
+    if not tinyfish.is_configured:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "TinyFish API is not configured. Live web research requires TINYFISH_API_KEY in backend/.env. "
+                "Simulated and hardcoded investigation results are strictly disabled in production. "
+                "See docs/TINYFISH_SETUP.md for setup instructions."
+            ),
         )
 
     investigation_id = f"inv_{uuid.uuid4().hex[:12]}"

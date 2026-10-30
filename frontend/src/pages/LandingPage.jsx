@@ -234,9 +234,9 @@ export default function LandingPage({ onNavigate, onStartInvestigation, onLoadEx
               <button
                 type="button"
                 className="btn-open-full-report"
-                onClick={() => onLoadExample(activeExample)}
+                onClick={() => onStartInvestigation(activeExample.input_text, activeExample.input_url)}
               >
-                <span>Open in Full Investigation Studio</span>
+                <span>Investigate This Claim Live</span>
                 <ArrowRight size={14} />
               </button>
             </div>
