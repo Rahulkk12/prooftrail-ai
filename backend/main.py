@@ -208,6 +208,17 @@ async def decompose_claim(claim: str) -> list[dict[str, Any]]:
     }]
 
 
+def enforce_evidence_status(status: str, relations: set[str]) -> str:
+    """Downgrade model verdicts that are not backed by matching validated passage relations."""
+    if status == "SUPPORTED" and "SUPPORTS" not in relations:
+        return "UNVERIFIED"
+    if status == "CONTRADICTED" and "CONTRADICTS" not in relations:
+        return "UNVERIFIED"
+    if status == "MIXED" and not {"SUPPORTS", "CONTRADICTS"}.issubset(relations):
+        return "UNVERIFIED"
+    return status if status in {"SUPPORTED", "CONTRADICTED", "MIXED", "UNVERIFIED"} else "UNVERIFIED"
+
+
 async def assess_evidence(claims: list[dict[str, Any]], sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not sources:
         return [{"claim_unit_id": c["id"], "status": "UNVERIFIED", "rationale": "No source content was successfully retrieved.", "evidence_ids": []} for c in claims]
@@ -248,15 +259,7 @@ async def assess_evidence(claims: list[dict[str, Any]], sources: list[dict[str, 
             })
             evidence_ids.append(evidence_id)
             evidence_relations.add(relation)
-        status = raw.get("status") if raw.get("status") in allowed else "UNVERIFIED"
-        # Prevent a verdict from contradicting the relations of its own cited passages.
-        # MIXED requires both direct support and direct contradiction in validated evidence.
-        if status == "SUPPORTED" and "SUPPORTS" not in evidence_relations:
-            status = "UNVERIFIED"
-        elif status == "CONTRADICTED" and "CONTRADICTS" not in evidence_relations:
-            status = "UNVERIFIED"
-        elif status == "MIXED" and not {"SUPPORTS", "CONTRADICTS"}.issubset(evidence_relations):
-            status = "UNVERIFIED"
+        status = enforce_evidence_status(raw.get("status", "UNVERIFIED"), evidence_relations)
         if status != "UNVERIFIED" and not evidence_ids:
             status = "UNVERIFIED"
         findings.append({"claim_unit_id": claim_id, "status": status, "rationale": normalize_text(str(raw.get("rationale", "")))[:1200] or "The available evidence does not support a defensible conclusion.", "evidence_ids": evidence_ids})
