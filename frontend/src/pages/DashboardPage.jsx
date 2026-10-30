@@ -127,13 +127,6 @@ export default function DashboardPage({ onNavigate, onSelectReport, onStartInves
             <span>Start Investigation</span>
             <ArrowRight size={14} />
           </button>
-          <button
-            type="button"
-            className="btn-banner-ghost"
-            onClick={handleQuickExample}
-          >
-            View Demo Benchmark ↗
-          </button>
         </div>
       </div>
 
