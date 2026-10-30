@@ -1,6 +1,7 @@
 import unittest
 
-from main import enforce_evidence_status, extract_exact_passage, validate_public_url
+from fastapi.testclient import TestClient
+from main import app, enforce_evidence_status, extract_exact_passage, validate_public_url
 
 
 class URLValidationTests(unittest.TestCase):
@@ -58,6 +59,31 @@ class EvidenceStatusPolicyTests(unittest.TestCase):
 
     def test_unverified_never_upgraded(self):
         self.assertEqual(enforce_evidence_status("UNVERIFIED", {"SUPPORTS", "CONTRADICTS"}), "UNVERIFIED")
+
+
+
+class APIContractTests(unittest.TestCase):
+    def setUp(self):
+        self.client = TestClient(app)
+
+    def test_health_endpoint_does_not_expose_credentials(self):
+        response = self.client.get("/api/health")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "ok")
+        self.assertNotIn("api_key", payload)
+        self.assertNotIn("secret", payload)
+
+    def test_report_not_found_returns_404(self):
+        response = self.client.get("/api/investigations/inv_does_not_exist/report")
+        self.assertEqual(response.status_code, 404)
+
+    def test_private_source_url_is_rejected_at_input(self):
+        response = self.client.post("/api/investigations", json={
+            "claim": "This is a sufficiently long claim for validation.",
+            "source_url": "http://127.0.0.1/private"
+        })
+        self.assertEqual(response.status_code, 422)
 
 
 if __name__ == "__main__":
