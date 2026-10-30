@@ -46,7 +46,7 @@ class EvidenceStatusPolicyTests(unittest.TestCase):
         self.assertEqual(enforce_evidence_status("MIXED", {"SUPPORTS"}), "UNVERIFIED")
 
     def test_exact_passage_returns_original_source_slice(self):
-        source = "The award is ₹50,000\\nfor eligible applicants."
+        source = "The award is ₹50,000\nfor eligible applicants."
         quote = extract_exact_passage(source, "The award is ₹50,000 for eligible applicants.")
         self.assertEqual(quote, source)
 
