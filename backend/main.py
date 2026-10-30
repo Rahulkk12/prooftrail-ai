@@ -213,7 +213,7 @@ def extract_exact_passage(source_text: str, proposed_passage: str) -> str | None
     words = proposed_passage.strip().split()
     if not words:
         return None
-    pattern = r"\\s+".join(re.escape(word) for word in words)
+    pattern = r"\s+".join(re.escape(word) for word in words)
     match = re.search(pattern, source_text)
     return match.group(0) if match else None
 
