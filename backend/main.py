@@ -254,13 +254,24 @@ async def assess_evidence(claims: list[dict[str, Any]], sources: list[dict[str, 
     source_by_id = {s["id"]: s for s in sources}
     findings = []
     allowed = {"SUPPORTED", "CONTRADICTED", "MIXED", "UNVERIFIED"}
-    for raw in result.get("findings", []):
+    raw_findings = result.get("findings", [])
+    if not isinstance(raw_findings, list):
+        raw_findings = []
+    valid_claim_ids = {c["id"] for c in claims}
+    for raw in raw_findings:
+        if not isinstance(raw, dict):
+            continue
         claim_id = raw.get("claim_unit_id")
-        if claim_id not in {c["id"] for c in claims}:
+        if claim_id not in valid_claim_ids:
             continue
         evidence_ids = []
         evidence_relations = set()
-        for ev in raw.get("evidence", [])[:12]:
+        raw_evidence = raw.get("evidence", [])
+        if not isinstance(raw_evidence, list):
+            raw_evidence = []
+        for ev in raw_evidence[:12]:
+            if not isinstance(ev, dict):
+                continue
             src = source_by_id.get(ev.get("source_id"))
             proposed_passage = str(ev.get("passage", "")).strip()
             # Return the exact original source slice, not a model paraphrase or retyped quote.
@@ -429,4 +440,21 @@ async def get_report(investigation_id: str):
 
 @app.post("/api/investigations/{investigation_id}/retry")
 async def retry_investigation(investigation_id: str):
-    raise HTTPException(status_code=501, detail="Retry is not enabled in this MVP. Submit a new investigation to start a fresh bounded run.")
+    # A retry is a new auditable run using the original inputs; it never overwrites
+    # the earlier report or pretends to resume from an unavailable checkpoint.
+    with db() as conn:
+        row = conn.execute(
+            "SELECT input_text, input_url FROM investigations WHERE id=?",
+            (investigation_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Investigation not found.")
+    retry_payload = InvestigationInput(claim=row["input_text"], source_url=row["input_url"])
+    report = await create_investigation(retry_payload)
+    report["retry_of"] = investigation_id
+    with db() as conn:
+        conn.execute(
+            "UPDATE investigations SET report_json=? WHERE id=?",
+            (json.dumps(report, ensure_ascii=False), report["investigation_id"]),
+        )
+    return report
