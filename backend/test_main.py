@@ -37,10 +37,12 @@ class EvidenceStatusPolicyTests(unittest.TestCase):
     def test_supported_requires_supporting_passage(self):
         self.assertEqual(enforce_evidence_status("SUPPORTED", {"SUPPORTS"}), "SUPPORTED")
         self.assertEqual(enforce_evidence_status("SUPPORTED", {"CONTRADICTS"}), "UNVERIFIED")
+        self.assertEqual(enforce_evidence_status("SUPPORTED", {"SUPPORTS", "CONTRADICTS"}), "MIXED")
 
     def test_contradicted_requires_contradicting_passage(self):
         self.assertEqual(enforce_evidence_status("CONTRADICTED", {"CONTRADICTS"}), "CONTRADICTED")
         self.assertEqual(enforce_evidence_status("CONTRADICTED", {"SUPPORTS"}), "UNVERIFIED")
+        self.assertEqual(enforce_evidence_status("CONTRADICTED", {"SUPPORTS", "CONTRADICTS"}), "MIXED")
 
     def test_mixed_requires_both_relations(self):
         self.assertEqual(enforce_evidence_status("MIXED", {"SUPPORTS", "CONTRADICTS"}), "MIXED")
