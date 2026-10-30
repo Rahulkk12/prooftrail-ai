@@ -77,6 +77,13 @@ class APIContractTests(unittest.TestCase):
         self.assertNotIn("api_key", payload)
         self.assertNotIn("secret", payload)
 
+    def test_list_investigations_returns_list(self):
+        response = self.client.get("/api/investigations")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("investigations", payload)
+        self.assertIn("total", payload)
+
     def test_report_not_found_returns_404(self):
         response = self.client.get("/api/investigations/inv_does_not_exist/report")
         self.assertEqual(response.status_code, 404)

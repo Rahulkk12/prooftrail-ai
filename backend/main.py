@@ -419,6 +419,35 @@ async def create_investigation(payload: InvestigationInput):
     return report
 
 
+@app.get("/api/investigations")
+async def list_investigations(limit: int = 50):
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT id, input_text, input_url, status, created_at, completed_at, report_json FROM investigations ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    results = []
+    for row in rows:
+        item = dict(row)
+        if item.get("report_json"):
+            try:
+                rep = json.loads(item["report_json"])
+                item["findings_count"] = len(rep.get("findings", []))
+                item["sources_count"] = len(rep.get("sources", []))
+                findings = rep.get("findings", [])
+                item["status_counts"] = {
+                    "SUPPORTED": sum(1 for f in findings if f.get("status") == "SUPPORTED"),
+                    "CONTRADICTED": sum(1 for f in findings if f.get("status") == "CONTRADICTED"),
+                    "MIXED": sum(1 for f in findings if f.get("status") == "MIXED"),
+                    "UNVERIFIED": sum(1 for f in findings if f.get("status") == "UNVERIFIED"),
+                }
+            except Exception:
+                pass
+            del item["report_json"]
+        results.append(item)
+    return {"investigations": results, "total": len(results)}
+
+
 @app.get("/api/investigations/{investigation_id}")
 async def get_investigation(investigation_id: str):
     with db() as conn:
