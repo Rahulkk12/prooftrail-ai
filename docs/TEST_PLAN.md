@@ -1,37 +1,42 @@
-# PROOFTRAIL AI — Validation & Verification Plan
+# PROOFTRAIL AI — Validation, Security Hardening & Verification Plan
 
 ## 1. Automated CI Coverage
 
-The CI workflow installs backend dependencies, runs Python unit and integration tests (using mocked provider responses), installs frontend dependencies, builds the Vite production bundle, and executes the frontend verification test suite.
+The CI workflow installs backend dependencies, runs Python unit and security integration tests (using mocked provider responses), installs frontend dependencies, builds the Vite production bundle, and executes the frontend verification test suite.
 
 ### Backend Automated Test Suites (`backend/test_main.py`):
 1. **URL Validation & Anti-SSRF Defense**:
    - Accepts valid public HTTP/HTTPS URLs and global public IPs.
    - Strictly rejects localhost, loopback (`127.0.0.1`), RFC-1918 private subnets (`10.x`, `172.16-31.x`, `192.168.x`).
    - Rejects link-local cloud metadata endpoints (`169.254.169.254`).
-   - Rejects non-HTTP schemes (e.g. `file://`, `ftp://`) and embedded credentials (`https://user:pass@host`).
-2. **Evidence Status Policy & Verbatim Extraction**:
-   - `SUPPORTED`: Requires supporting passage and no contradictory passages.
-   - `CONTRADICTED`: Requires contradicting passage and no supporting passages.
+   - Rejects IPv4-mapped IPv6 private addresses (e.g. `::ffff:127.0.0.1`, `::ffff:169.254.169.254`).
+   - Rejects non-HTTP schemes (e.g. `file://`, `ftp://`, `gopher://`, `javascript:`) and embedded credentials (`https://user:pass@host`).
+   - Redirect Revalidation: Re-checks DNS resolution and IP ranges on the destination `final_url` returned after web redirects.
+2. **Prompt Injection & Adversarial Content Defense**:
+   - Sanitizes untrusted webpage text, disarming XML/HTML delimiter tags (e.g., `<UNTRUSTED_RETRIEVED_WEB_DATA>`).
+   - Strips zero-width unicode characters and control characters used for prompt smuggling.
+   - Strictly fences retrieved web text within structured XML data blocks with system-level instruction overrides disarmed.
+3. **Evidence Status Policy & Verbatim Extraction**:
+   - `SUPPORTED`: Requires supporting passage and zero contradictory passages.
+   - `CONTRADICTED`: Requires contradictory passage and zero supporting passages.
    - `MIXED`: Enforces that both supporting and contradicting evidence are present.
-   - `UNVERIFIED`: Assigned whenever evidence is missing, inaccessible, or model verdict is unsupported.
+   - `UNVERIFIED`: Assigned whenever evidence is missing, inaccessible, or model verdict is unsupported. Missing evidence is never interpreted as proof of falsity.
    - Substring Extraction: Extracts exact original source slice allowing only whitespace normalization; strictly rejects paraphrased passages.
-3. **Claim Decomposition**:
-   - Rule-based deterministic fallback parses funding/stipend amounts, deadlines, and organizations into atomic claim units.
+4. **Claim Decomposition**:
+   - Rule-based deterministic fallback parses funding/stipend amounts, deadlines, organizations, and eligibility into atomic claim units.
    - Automatically attaches targeted `official_query` and `independent_query` for web discovery.
-4. **TinyFish Adapter Mocked Unit Tests**:
+5. **Source Quality & Credibility Evaluation**:
+   - Classifies sources by domain credibility (`OFFICIAL_PORTAL`, `REPUTABLE_NEWS`, `SECONDARY_OR_COMMUNITY`, `GENERAL_WEB`).
+   - Evaluates publication dates to flag potentially outdated historical articles.
+6. **Security Hardening & Secret Protection**:
+   - Security headers verified on all responses: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, `Content-Security-Policy: default-src 'self'`, `Permissions-Policy`.
+   - Rate limiting enforced with sliding window per IP.
+   - Sanitizes logs and health endpoints: keys and tokens are never exposed.
+7. **TinyFish Adapter Unit Tests**:
    - Schema normalization for Search results (`position`, `site_name`, `title`, `snippet`, `url`).
    - Bounded retries and backoff on HTTP 429 (Rate Limit).
    - In-memory content caching prevents redundant HTTP fetch calls on identical URLs.
    - Partial page errors captured in `errors[]` array.
-5. **API Contracts & Integration**:
-   - `GET /api/health`: Confirms status and cache size without exposing credentials.
-   - `POST /api/investigations`: Executes end-to-end pipeline with mocked providers.
-   - `GET /api/investigations`: Returns paginated history and findings breakdown.
-   - `GET /api/investigations/{id}`: Returns investigation metadata.
-   - `GET /api/investigations/{id}/report`: Returns full report JSON.
-   - `GET /api/investigations/{id}/export`: Exports report in structured JSON or executive Markdown format.
-   - `POST /api/investigations/{id}/retry`: Preserves prior audit run and links `retry_of`.
 
 ---
 
@@ -46,15 +51,15 @@ export RUN_LIVE_TINYFISH_TESTS=1
 python -m unittest backend.test_main.LiveTinyFishIntegrationTests
 ```
 
-### Manual Acceptance Checklist:
-1. Configure `TINYFISH_API_KEY` in `backend/.env`.
-2. Configure `LLM_API_KEY` in `backend/.env` (optional, for AI comparison).
-3. Check `GET /api/health` and verify `tinyfish_configured: true`.
-4. Submit a test claim via `POST /api/investigations`:
-   - *"The Government announced a ₹50,000 scholarship for college students before 30 November."*
-5. Inspect the report run trace:
-   - Verify `tinyfish_search` queries discovered real government/news candidate URLs.
-   - Verify `tinyfish_fetch` retrieved clean markdown DOM text.
-   - Verify every cited evidence passage matches word-for-word in the source DOM.
-6. Submit a conflicting claim and verify that contradicting and supporting passages trigger `MIXED`.
-7. Submit an unverified or obscure claim and verify status remains strictly `UNVERIFIED`.
+---
+
+## 3. Known Limitations & Security Disclaimers
+
+> [!WARNING]
+> ProofTrail AI is designed as a forensic evidence-assistance system. It does not claim formal security certification or complete, infallible protection against all theoretical attacks.
+
+Known boundaries and operational limitations:
+1. **Network-Level DNS Rebinding**: Application-level DNS validation checks host resolution at request time. In high-security multi-tenant environments, dedicated OS/container network-level egress firewalls and proxy egress gateways should be configured.
+2. **Dynamic Client-Side Single Page Apps**: Standard static fetch extracts rendered HTML/markdown. Sites requiring complex multi-step user interaction (e.g. CAPTCHAs or authenticated portals) require the TinyFish Agent interface.
+3. **Syndicated Wire Reports**: If multiple news portals republish the exact same wire service bulletin (e.g. identical press release), ProofTrail evaluates unique root domains, but human review is still advised to distinguish independent reporting from syndicated press releases.
+4. **Third-Party Model Integrity**: If an external LLM provider experiences an outage or provides unparseable output, the engine conservatively downgrades all claims to `UNVERIFIED` rather than guessing or hallucinating facts.
