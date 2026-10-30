@@ -3,7 +3,8 @@ services:
     build:
       context: ./backend
     env_file:
-      - ./backend/.env
+      - path: ./backend/.env
+        required: false
     environment:
       DATABASE_PATH: /app/data/prooftrail.db
       FRONTEND_ORIGIN: http://localhost:8080
