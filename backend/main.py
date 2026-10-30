@@ -220,11 +220,17 @@ def extract_exact_passage(source_text: str, proposed_passage: str) -> str | None
 
 def enforce_evidence_status(status: str, relations: set[str]) -> str:
     """Downgrade model verdicts that are not backed by matching validated passage relations."""
-    if status == "SUPPORTED" and "SUPPORTS" not in relations:
+    has_support = "SUPPORTS" in relations
+    has_contradiction = "CONTRADICTS" in relations
+    if status == "SUPPORTED" and not has_support:
         return "UNVERIFIED"
-    if status == "CONTRADICTED" and "CONTRADICTS" not in relations:
+    if status == "SUPPORTED" and has_contradiction:
+        return "MIXED"
+    if status == "CONTRADICTED" and not has_contradiction:
         return "UNVERIFIED"
-    if status == "MIXED" and not {"SUPPORTS", "CONTRADICTS"}.issubset(relations):
+    if status == "CONTRADICTED" and has_support:
+        return "MIXED"
+    if status == "MIXED" and not (has_support and has_contradiction):
         return "UNVERIFIED"
     return status if status in {"SUPPORTED", "CONTRADICTED", "MIXED", "UNVERIFIED"} else "UNVERIFIED"
 
