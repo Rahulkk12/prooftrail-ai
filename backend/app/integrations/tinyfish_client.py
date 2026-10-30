@@ -187,7 +187,7 @@ class TinyFishClient:
 
         headers = self._headers()
         params: dict[str, Any] = {
-            "q": clean_query,
+            "query": clean_query,
             "location": location,
             "language": language,
         }
