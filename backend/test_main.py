@@ -110,6 +110,18 @@ class APIContractTests(unittest.TestCase):
         self.assertTrue(all(f["status"] == "UNVERIFIED" for f in report["findings"]))
         self.assertTrue(any("LLM_API_KEY" in x for x in report["limitations"]))
         self.assertTrue(report["investigation_id"].startswith("inv_"))
+        report_response = self.client.get(
+            f"/api/investigations/{report['investigation_id']}/report"
+        )
+        self.assertEqual(report_response.status_code, 200)
+        self.assertEqual(report_response.json()["investigation_id"], report["investigation_id"])
+        retry_response = self.client.post(
+            f"/api/investigations/{report['investigation_id']}/retry"
+        )
+        self.assertEqual(retry_response.status_code, 200)
+        retry_report = retry_response.json()
+        self.assertNotEqual(retry_report["investigation_id"], report["investigation_id"])
+        self.assertEqual(retry_report["retry_of"], report["investigation_id"])
 
 
 if __name__ == "__main__":
