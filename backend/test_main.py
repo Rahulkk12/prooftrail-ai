@@ -1,11 +1,10 @@
 import unittest
 
-from main import validate_public_url
+from main import enforce_evidence_status, validate_public_url
 
 
 class URLValidationTests(unittest.TestCase):
-    def test_accepts_https_public_hostname_syntax(self):
-        # DNS resolution is intentionally avoided in this test by using a public IP.
+    def test_accepts_public_ip(self):
         self.assertEqual(validate_public_url("https://8.8.8.8/path"), "https://8.8.8.8/path")
 
     def test_rejects_localhost(self):
@@ -31,6 +30,26 @@ class URLValidationTests(unittest.TestCase):
     def test_rejects_embedded_credentials(self):
         with self.assertRaises(ValueError):
             validate_public_url("https://user:password@example.com/")
+
+
+class EvidenceStatusPolicyTests(unittest.TestCase):
+    def test_supported_requires_supporting_passage(self):
+        self.assertEqual(enforce_evidence_status("SUPPORTED", {"SUPPORTS"}), "SUPPORTED")
+        self.assertEqual(enforce_evidence_status("SUPPORTED", {"CONTRADICTS"}), "UNVERIFIED")
+
+    def test_contradicted_requires_contradicting_passage(self):
+        self.assertEqual(enforce_evidence_status("CONTRADICTED", {"CONTRADICTS"}), "CONTRADICTED")
+        self.assertEqual(enforce_evidence_status("CONTRADICTED", {"SUPPORTS"}), "UNVERIFIED")
+
+    def test_mixed_requires_both_relations(self):
+        self.assertEqual(enforce_evidence_status("MIXED", {"SUPPORTS", "CONTRADICTS"}), "MIXED")
+        self.assertEqual(enforce_evidence_status("MIXED", {"SUPPORTS"}), "UNVERIFIED")
+
+    def test_unknown_status_is_unverified(self):
+        self.assertEqual(enforce_evidence_status("LIKELY_TRUE", {"SUPPORTS"}), "UNVERIFIED")
+
+    def test_unverified_never_upgraded(self):
+        self.assertEqual(enforce_evidence_status("UNVERIFIED", {"SUPPORTS", "CONTRADICTS"}), "UNVERIFIED")
 
 
 if __name__ == "__main__":
