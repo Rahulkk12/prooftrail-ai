@@ -63,12 +63,11 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_investigations_status ON investigations(status);
 `);
 
-console.log(`[ProofTrail Engine] SQLite database initialized at ${dbPath}`);
+console.log(`[ProofTrail Engine] SQLite database ready at ${dbPath}`);
 
 // In-memory cache for fetched pages
 const pageCache = new Map();
 
-// Helpers
 function nowIso() {
   return new Date().toISOString();
 }
@@ -98,49 +97,58 @@ function isSafePublicUrl(urlStr) {
   }
 }
 
-// Substring extraction
-function extractExactPassage(sourceText, candidateText) {
-  if (!sourceText || !candidateText) return null;
-  const sLower = sourceText.toLowerCase();
-  const cClean = candidateText.trim().replace(/\s+/g, ' ');
-  const cLower = cClean.toLowerCase();
+// Extract exact verbatim substring with highest semantic relevance
+function extractExactPassage(sourceText, claimText) {
+  if (!sourceText || typeof sourceText !== 'string' || !claimText) return null;
 
-  // 1. Direct exact substring match
-  const idx = sLower.indexOf(cLower);
-  if (idx !== -1) {
-    return sourceText.slice(idx, idx + cClean.length);
-  }
+  // Filter significant query keywords (len >= 3)
+  const stopWords = new Set(['this', 'that', 'with', 'from', 'into', 'have', 'were', 'been', 'will', 'some', 'what', 'when', 'then', 'about', 'more', 'there']);
+  const keywords = claimText
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length >= 3 && !stopWords.has(w));
 
-  // 2. Sentence-based search
-  const sentences = sourceText.split(/[.\n!?;]+/).map(s => s.trim()).filter(s => s.length > 20);
-  const words = cLower.split(/\s+/).filter(w => w.length > 3);
+  if (keywords.length === 0) return null;
+
+  // Split into distinct candidate sentences / clauses
+  const rawSentences = sourceText
+    .split(/(?<=[.!?\n])\s+/)
+    .map(s => s.trim())
+    .filter(s => s.length >= 25 && s.length <= 450);
+
   let bestSentence = null;
   let bestScore = 0;
 
-  for (const s of sentences) {
-    const sLow = s.toLowerCase();
+  for (const sent of rawSentences) {
+    const sentLow = sent.toLowerCase();
     let matches = 0;
-    for (const w of words) {
-      if (sLow.includes(w)) matches++;
+    for (const kw of keywords) {
+      if (sentLow.includes(kw)) matches++;
     }
-    const score = matches / Math.max(1, words.length);
-    if (score > bestScore && score >= 0.5) {
+    const score = matches / keywords.length;
+    if (score > bestScore && score >= 0.35) {
       bestScore = score;
-      bestSentence = s;
+      bestSentence = sent;
     }
   }
 
-  return bestSentence;
+  // Invariant verification: MUST be exact verbatim substring of sourceText
+  if (bestSentence && sourceText.includes(bestSentence)) {
+    return bestSentence;
+  }
+  return null;
 }
 
-// TinyFish Search HTTP call
-async function tinyfishSearch(query) {
+// TinyFish Search with automated retry and backoff
+async function tinyfishSearchSingle(query) {
   if (!TINYFISH_KEY) {
     throw new Error('TINYFISH_API_KEY is not configured in backend/.env.');
   }
 
+  const cleanQuery = query.trim();
   const searchUrl = new URL(TINYFISH_SEARCH_BASE);
-  searchUrl.searchParams.set('query', query);
+  searchUrl.searchParams.set('query', cleanQuery);
   searchUrl.searchParams.set('location', 'IN');
   searchUrl.searchParams.set('language', 'en');
 
@@ -150,38 +158,81 @@ async function tinyfishSearch(query) {
     'User-Agent': 'ProofTrail-AI/0.4.0',
   };
 
-  const res = await fetch(searchUrl.toString(), { method: 'GET', headers });
-  if (res.status === 429) {
-    throw new Error('TinyFish Search rate limit exceeded (HTTP 429). Please retry shortly.');
-  }
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    throw new Error(`TinyFish Search HTTP ${res.status}: ${errText.slice(0, 200)}`);
-  }
+  let lastErr = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await fetch(searchUrl.toString(), { method: 'GET', headers });
+      if (res.status === 429) {
+        await new Promise(r => setTimeout(r, 1500));
+        continue;
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`TinyFish Search HTTP ${res.status}: ${text.slice(0, 140)}`);
+      }
 
-  const data = await res.json();
-  const rawList = data.results || data.items || (Array.isArray(data) ? data : []);
-  const normalized = [];
-  const seen = new Set();
+      const data = await res.json();
+      const rawList = data.results || data.items || (Array.isArray(data) ? data : []);
+      const normalized = [];
 
-  for (const item of rawList) {
-    const u = item.url || item.link;
-    if (u && isSafePublicUrl(u) && !seen.has(u)) {
-      seen.add(u);
-      normalized.push({
-        url: u,
-        title: item.title || item.name || u,
-        snippet: item.snippet || item.description || '',
-        publisher: item.site_name || item.publisher || new URL(u).hostname,
-        date: item.published_date || item.date || null,
-      });
+      for (const item of rawList) {
+        const u = item.url || item.link;
+        if (u && isSafePublicUrl(u)) {
+          normalized.push({
+            url: u,
+            title: item.title || item.name || u,
+            snippet: item.snippet || item.description || '',
+            publisher: item.site_name || item.publisher || new URL(u).hostname,
+            date: item.published_date || item.date || null,
+          });
+        }
+      }
+      return normalized;
+    } catch (err) {
+      lastErr = err;
+      await new Promise(r => setTimeout(r, 1000));
     }
   }
 
-  return normalized.slice(0, 8);
+  throw lastErr || new Error('TinyFish Search connection failed after retries.');
 }
 
-// TinyFish Fetch HTTP call
+// Multi-Tier Search for high-coverage discovery
+async function multiTierTinyFishSearch(claim) {
+  const words = claim.trim().split(/\s+/);
+  const stopWords = new Set(['this', 'that', 'with', 'from', 'into', 'have', 'were', 'been', 'will', 'some', 'what', 'when']);
+  const coreWords = words.filter(w => w.length > 3 && !stopWords.has(w.toLowerCase()));
+
+  const queries = [claim.slice(0, 250)];
+  if (coreWords.length >= 2) {
+    queries.push(`${coreWords.slice(0, 4).join(' ')} news report`);
+  }
+  if (coreWords.length >= 3) {
+    queries.push(`${coreWords.slice(0, 3).join(' ')} fact check verified`);
+  }
+
+  const allResults = [];
+  const seenUrls = new Set();
+
+  for (const q of queries.slice(0, 2)) {
+    try {
+      const res = await tinyfishSearchSingle(q);
+      for (const item of res) {
+        if (!seenUrls.has(item.url)) {
+          seenUrls.add(item.url);
+          allResults.push(item);
+        }
+      }
+      if (allResults.length >= 8) break;
+    } catch (e) {
+      console.warn(`[Search Warning] Query "${q}" failed:`, e.message);
+    }
+  }
+
+  return allResults.slice(0, 8);
+}
+
+// TinyFish Fetch with automated retry and cache
 async function tinyfishFetch(urls) {
   if (!TINYFISH_KEY) {
     throw new Error('TINYFISH_API_KEY is not configured in backend/.env.');
@@ -211,37 +262,47 @@ async function tinyfishFetch(urls) {
     'User-Agent': 'ProofTrail-AI/0.4.0',
   };
 
-  const res = await fetch(TINYFISH_FETCH_BASE, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ urls: uncached }),
-  });
+  let fetched = [];
+  let rawErrors = [];
 
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    return {
-      pages: cached,
-      errors: [{ url: 'batch', error: `TinyFish Fetch HTTP ${res.status}: ${errText.slice(0, 160)}` }],
-    };
-  }
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await fetch(TINYFISH_FETCH_BASE, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ urls: uncached }),
+      });
 
-  const data = await res.json();
-  const rawPages = data.results || data.pages || (Array.isArray(data) ? data : []);
-  const rawErrors = data.errors || [];
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        rawErrors.push({ url: 'batch', error: `TinyFish Fetch HTTP ${res.status}: ${errText.slice(0, 160)}` });
+        break;
+      }
 
-  const fetched = [];
-  for (const p of rawPages) {
-    if (p && p.url) {
-      const pageObj = {
-        url: p.url,
-        final_url: p.final_url || p.url,
-        title: p.title || p.url,
-        text: p.text || p.markdown || p.content || '',
-        published_date: p.published_date || p.date || null,
-        status: p.status || 200,
-      };
-      pageCache.set(p.url, pageObj);
-      fetched.push(pageObj);
+      const data = await res.json();
+      const rawPages = data.results || data.pages || (Array.isArray(data) ? data : []);
+      rawErrors = data.errors || [];
+
+      for (const p of rawPages) {
+        if (p && p.url) {
+          const pageObj = {
+            url: p.url,
+            final_url: p.final_url || p.url,
+            title: p.title || p.url,
+            text: p.text || p.markdown || p.content || '',
+            published_date: p.published_date || p.date || null,
+            status: p.status || 200,
+          };
+          pageCache.set(p.url, pageObj);
+          fetched.push(pageObj);
+        }
+      }
+      break;
+    } catch (err) {
+      if (attempt === 2) {
+        rawErrors.push({ url: 'batch', error: err.message });
+      }
+      await new Promise(r => setTimeout(r, 1000));
     }
   }
 
@@ -251,59 +312,57 @@ async function tinyfishFetch(urls) {
   };
 }
 
-// Claim decomposition
+// Structured claim decomposition
 function decomposeClaim(claimText) {
   const units = [];
   let idCounter = 0;
 
-  // 1. Core Statement
+  // 1. Primary assertion
   units.push({
     id: `claim_unit_${idCounter++}`,
     category: 'PRIMARY_CLAIM',
-    field_name: 'Core Assertion',
+    field_name: 'Core Claim Assertion',
     claim_text: claimText.trim(),
-    verification_question: `Does reliable web reporting confirm that: "${claimText.trim()}"?`,
-    official_query: `${claimText.trim()} official notice report`,
-    independent_query: `${claimText.trim()} news update fact check`,
+    verification_question: `Does authenticated reporting confirm: "${claimText.trim()}"?`,
   });
 
-  // 2. Incident / Event Extraction
+  // 2. Incident / Occurrence extraction
   const words = claimText.split(/\s+/);
-  const keywords = words.filter(w => w.length > 3 && !['this', 'that', 'with', 'from', 'into', 'have', 'were'].includes(w.toLowerCase()));
+  const stopWords = new Set(['this', 'that', 'with', 'from', 'into', 'have', 'were', 'been', 'will', 'some', 'what', 'when']);
+  const keywords = words.filter(w => w.length > 3 && !stopWords.has(w.toLowerCase()));
+
   if (keywords.length >= 2) {
     const subject = keywords.slice(0, 3).join(' ');
     units.push({
       id: `claim_unit_${idCounter++}`,
       category: 'EVENT_SUBJECT',
-      field_name: 'Subject Entity & Occurrence',
-      claim_text: `Subject involving: ${subject}`,
-      verification_question: `What official or verified news reports exist regarding ${subject}?`,
-      official_query: `${subject} news incident official`,
-      independent_query: `${subject} verified reports`,
+      field_name: 'Subject Entity & Event Corroboration',
+      claim_text: `Incident involving: ${subject}`,
+      verification_question: `What official press releases or news reports verify ${subject}?`,
     });
   }
 
   return units;
 }
 
-// Investigation Engine
+// Complete investigation execution
 async function runInvestigation(claim, sourceUrl) {
   const invId = `inv_${crypto.randomBytes(6).toString('hex')}`;
   const created = nowIso();
   const limitations = [];
 
-  // Decompose
+  // 1. Decompose
   const claimUnits = decomposeClaim(claim);
 
-  // Search TinyFish
+  // 2. Multi-Tier TinyFish Search
   let searchResults = [];
   try {
-    searchResults = await tinyfishSearch(claim.slice(0, 300));
+    searchResults = await multiTierTinyFishSearch(claim);
   } catch (err) {
-    limitations.push(`TinyFish Search query failed: ${err.message}`);
+    limitations.push(`TinyFish Search query error: ${err.message}`);
   }
 
-  // Collect candidate URLs
+  // 3. Assemble and sanitize candidate URLs
   const candidateUrls = [];
   if (sourceUrl && isSafePublicUrl(sourceUrl)) {
     candidateUrls.push(sourceUrl);
@@ -314,7 +373,7 @@ async function runInvestigation(claim, sourceUrl) {
     }
   }
 
-  // Fetch Page Contents
+  // 4. TinyFish Fetch
   let fetchedPages = [];
   if (candidateUrls.length > 0) {
     try {
@@ -330,12 +389,12 @@ async function runInvestigation(claim, sourceUrl) {
     limitations.push('No public candidate sources were discovered for this claim.');
   }
 
-  // Format sources
-  const sources = fetchedPages.map((page, idx) => {
+  // 5. Structure sources
+  const sources = fetchedPages.map((page) => {
     const matchingSearch = searchResults.find(s => s.url === page.url) || {};
     const domain = new URL(page.final_url || page.url).hostname.toLowerCase();
     const isGov = domain.endsWith('.gov') || domain.endsWith('.gov.in') || domain.endsWith('.nic.in');
-    const isNews = domain.includes('news') || domain.includes('times') || domain.includes('hindu') || domain.includes('express');
+    const isNews = domain.includes('news') || domain.includes('times') || domain.includes('hindu') || domain.includes('express') || domain.includes('ndtv') || domain.includes('today');
 
     return {
       id: `src_${crypto.randomBytes(5).toString('hex')}`,
@@ -356,7 +415,7 @@ async function runInvestigation(claim, sourceUrl) {
     };
   });
 
-  // Evaluate Evidence
+  // 6. Evidence Cross-Referencing
   const allEvidence = [];
   const findings = [];
 
@@ -373,11 +432,22 @@ async function runInvestigation(claim, sourceUrl) {
         const pLower = passage.toLowerCase();
         let relation = 'CONTEXT';
 
-        // Check sentiment / corroboration in passage
-        if (pLower.includes('fire') || pLower.includes('incident') || pLower.includes('broke out') || pLower.includes('reported') || pLower.includes('confirmed')) {
+        // Contextual analysis of extracted verbatim quotation
+        if (
+          pLower.includes('fire') || pLower.includes('incident') ||
+          pLower.includes('broke out') || pLower.includes('reported') ||
+          pLower.includes('confirmed') || pLower.includes('scholarship') ||
+          pLower.includes('sanction') || pLower.includes('approved') ||
+          pLower.includes('arrest') || pLower.includes('probe')
+        ) {
           relation = 'SUPPORTS';
           hasSupport = true;
-        } else if (pLower.includes('fake') || pLower.includes('denied') || pLower.includes('false') || pLower.includes('hoax') || pLower.includes('untrue')) {
+        } else if (
+          pLower.includes('fake') || pLower.includes('denied') ||
+          pLower.includes('false') || pLower.includes('hoax') ||
+          pLower.includes('untrue') || pLower.includes('dismissed') ||
+          pLower.includes('refuted') || pLower.includes('misleading')
+        ) {
           relation = 'CONTRADICTS';
           hasContradict = true;
         }
@@ -398,9 +468,9 @@ async function runInvestigation(claim, sourceUrl) {
         matchingEvIds.push(evId);
 
         if (!bestRationale && relation === 'SUPPORTS') {
-          bestRationale = `Verified by exact reportage in ${src.publisher}: "${passage.slice(0, 120)}..."`;
+          bestRationale = `Verified by exact reportage in ${src.publisher}: "${passage.slice(0, 140)}..."`;
         } else if (!bestRationale && relation === 'CONTRADICTS') {
-          bestRationale = `Directly contradicted by report in ${src.publisher}: "${passage.slice(0, 120)}..."`;
+          bestRationale = `Directly contradicted by report in ${src.publisher}: "${passage.slice(0, 140)}..."`;
         }
       }
     }
@@ -428,7 +498,7 @@ async function runInvestigation(claim, sourceUrl) {
     });
   }
 
-  // Overall status
+  // 7. Overall status
   const statuses = findings.map(f => f.status);
   let overallStatus = 'completed';
   if (sources.length === 0) {
@@ -451,7 +521,7 @@ async function runInvestigation(claim, sourceUrl) {
     limitations,
   };
 
-  // Persist to SQLite
+  // 8. Persist to SQLite
   try {
     const insertStmt = db.prepare(`
       INSERT INTO investigations (
@@ -482,7 +552,7 @@ async function runInvestigation(claim, sourceUrl) {
   return report;
 }
 
-// 3. HTTP Server
+// 3. HTTP API Server
 const server = http.createServer(async (req, res) => {
   // CORS & Security Headers
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -500,7 +570,6 @@ const server = http.createServer(async (req, res) => {
   const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = parsedUrl.pathname;
 
-  // Body parser helper
   const readBody = () => new Promise((resolve) => {
     let body = '';
     req.on('data', chunk => body += chunk);
@@ -513,7 +582,6 @@ const server = http.createServer(async (req, res) => {
     });
   });
 
-  // Helper response
   const sendJson = (statusCode, data) => {
     res.writeHead(statusCode, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(data, null, 2));
@@ -592,9 +660,9 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      console.log(`[ProofTrail Engine] Initiating live investigation: "${claim.slice(0, 60)}..."`);
+      console.log(`[ProofTrail Engine] Running live multi-tier investigation: "${claim.slice(0, 60)}..."`);
       const report = await runInvestigation(claim, sourceUrl);
-      console.log(`[ProofTrail Engine] Investigation ${report.investigation_id} completed: ${report.sources.length} sources crawled.`);
+      console.log(`[ProofTrail Engine] Investigation ${report.investigation_id} done (${report.sources.length} sources).`);
       sendJson(200, report);
       return;
     }
