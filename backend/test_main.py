@@ -1,6 +1,6 @@
 import unittest
 
-from main import enforce_evidence_status, validate_public_url
+from main import enforce_evidence_status, extract_exact_passage, validate_public_url
 
 
 class URLValidationTests(unittest.TestCase):
@@ -44,6 +44,14 @@ class EvidenceStatusPolicyTests(unittest.TestCase):
     def test_mixed_requires_both_relations(self):
         self.assertEqual(enforce_evidence_status("MIXED", {"SUPPORTS", "CONTRADICTS"}), "MIXED")
         self.assertEqual(enforce_evidence_status("MIXED", {"SUPPORTS"}), "UNVERIFIED")
+
+    def test_exact_passage_returns_original_source_slice(self):
+        source = "The award is ₹50,000\\nfor eligible applicants."
+        quote = extract_exact_passage(source, "The award is ₹50,000 for eligible applicants.")
+        self.assertEqual(quote, source)
+
+    def test_paraphrased_passage_is_rejected(self):
+        self.assertIsNone(extract_exact_passage("The award is ₹50,000.", "The award is ₹60,000."))
 
     def test_unknown_status_is_unverified(self):
         self.assertEqual(enforce_evidence_status("LIKELY_TRUE", {"SUPPORTS"}), "UNVERIFIED")
